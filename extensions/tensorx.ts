@@ -91,13 +91,15 @@ function mapCatalog(data: TensorXModel[]): RegisteredModel[] {
 	return models;
 }
 
-async function fetchModels(): Promise<RegisteredModel[] | undefined> {
-	const apiKey = process.env[API_KEY_ENV_VAR];
-	if (!apiKey) return undefined;
-
+// Fetch the live catalog using the effective API key. `refreshModels` passes the
+// resolved credential here — pi presents the /login-stored key (authoritative) or
+// the TENSORX_API_KEY env fallback — so a /login-authenticated user gets the
+// current catalog without any manual snapshot update.
+async function fetchModels(apiKey: string, signal?: AbortSignal): Promise<RegisteredModel[] | undefined> {
 	try {
 		const res = await fetch(`${BASE_URL}/model/info`, {
 			headers: { Authorization: `Bearer ${apiKey}` },
+			signal,
 		});
 		if (!res.ok) {
 			console.warn(`[${PROVIDER_NAME}] API returned ${res.status}: ${res.statusText}`);
@@ -118,71 +120,69 @@ async function fetchModels(): Promise<RegisteredModel[] | undefined> {
 }
 
 // Snapshot of the tool-capable TensorX catalog, in the API's native shape so it
-// runs through the same mapCatalog() as the live fetch. The catalog endpoint
-// needs an API key that pi does not expose to extensions, so without
-// TENSORX_API_KEY in the environment the live fetch can't run — this snapshot is
-// what gets registered then, which is also what makes TensorX show up under
-// /login → API Keys (pi only lists providers that have at least one model).
-// Regenerate from `GET /v1/model/info` when the catalog changes.
+// runs through the same mapCatalog() as the live fetch. Used only as the
+// initial / offline catalog (e.g. before a /login key is stored, so TensorX
+// still appears under /login → API Keys) and as the fallback if the live fetch
+// fails. `refreshModels` replaces it with the live catalog when a key is
+// available, so stale entries here don't cause 403 `permission_error`s.
 const FALLBACK_CATALOG: TensorXModel[] = [
-	{ model_name: "deepseek-v4-flash-backup", model_info: { max_input_tokens: 1048576, max_output_tokens: 384000, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 1.5e-07, output_cost_per_token: 3e-07, cache_read_input_token_cost: 3.75e-08, cache_creation_input_token_cost: 1.875e-07 } },
-	{ model_name: "deepseek/deepseek-chat-v3-0324", model_info: { max_input_tokens: 163840, max_output_tokens: 8192, supports_function_calling: true, input_cost_per_token: 3e-07, output_cost_per_token: 1e-06, cache_read_input_token_cost: 7.5e-08, cache_creation_input_token_cost: 3.75e-07 } },
-	{ model_name: "deepseek/deepseek-chat-v3.1", model_info: { max_input_tokens: 164000, max_output_tokens: 163840, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 2e-07, output_cost_per_token: 8e-07, cache_read_input_token_cost: 5e-08, cache_creation_input_token_cost: 2.5e-07 } },
-	{ model_name: "deepseek/deepseek-r1-0528", model_info: { max_input_tokens: 164000, max_output_tokens: 8192, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 6.6e-07, output_cost_per_token: 2.6e-06, cache_read_input_token_cost: 1.65e-07, cache_creation_input_token_cost: 8.25e-07 } },
-	{ model_name: "deepseek/deepseek-v3.2", model_info: { max_input_tokens: 163840, max_output_tokens: 163840, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 3e-07, output_cost_per_token: 5e-07, cache_read_input_token_cost: 7.5e-08, cache_creation_input_token_cost: 3.75e-07 } },
-	{ model_name: "deepseek/deepseek-v4-flash", model_info: { max_input_tokens: 1048576, max_output_tokens: 384000, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 1.5e-07, output_cost_per_token: 3e-07, cache_read_input_token_cost: 3.75e-08, cache_creation_input_token_cost: 1.875e-07 } },
-	{ model_name: "deepseek/deepseek-v4-pro", model_info: { max_input_tokens: 1048576, max_output_tokens: 384000, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 1.75e-06, output_cost_per_token: 3.5e-06, cache_read_input_token_cost: 4.375e-07, cache_creation_input_token_cost: 2.185e-06 } },
-	{ model_name: "meta-llama/llama-3.3-70b-instruct", model_info: { max_input_tokens: 131000, max_output_tokens: null, supports_function_calling: true, input_cost_per_token: 1.04e-07, output_cost_per_token: 3.12e-07, cache_read_input_token_cost: 2.6e-08, cache_creation_input_token_cost: 1.3e-07 } },
-	{ model_name: "meta-llama/llama-4-maverick", model_info: { max_input_tokens: 1050000, max_output_tokens: null, supports_function_calling: true, input_cost_per_token: 1.36e-07, output_cost_per_token: 6.8e-07, cache_read_input_token_cost: 3.4e-08, cache_creation_input_token_cost: 1.7e-07 } },
-	{ model_name: "minimax/minimax-m2", model_info: { max_input_tokens: 196608, max_output_tokens: 196608, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 2.5e-07, output_cost_per_token: 1e-06, cache_read_input_token_cost: 6.25e-08, cache_creation_input_token_cost: 3.125e-07 } },
-	{ model_name: "minimax/minimax-m2.1", model_info: { max_input_tokens: 196608, max_output_tokens: 131072, supports_function_calling: true, supports_vision: true, supports_reasoning: true, input_cost_per_token: 3e-07, output_cost_per_token: 2.4e-06, cache_read_input_token_cost: 7.5e-08, cache_creation_input_token_cost: 3.75e-07 } },
-	{ model_name: "minimax/minimax-m2.5", model_info: { max_input_tokens: 196608, max_output_tokens: 65536, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 3e-07, output_cost_per_token: 1.2e-06, cache_read_input_token_cost: 7.5e-08, cache_creation_input_token_cost: 3.75e-07 } },
-	{ model_name: "minimax/minimax-m2.7", model_info: { max_input_tokens: 196608, max_output_tokens: 196608, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 5e-07, output_cost_per_token: 1.5e-06, cache_read_input_token_cost: 1.25e-07, cache_creation_input_token_cost: 6.25e-07 } },
-	{ model_name: "minimax/minimax-m3", model_info: { max_input_tokens: 1048576, max_output_tokens: 131072, supports_function_calling: true, supports_vision: true, supports_reasoning: true, input_cost_per_token: 4e-07, output_cost_per_token: 2e-06, cache_read_input_token_cost: 1e-07 } },
-	{ model_name: "moonshotai/Kimi-K2.6", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, supports_function_calling: true, supports_vision: true, supports_reasoning: true, input_cost_per_token: 1e-06, output_cost_per_token: 4e-06, cache_read_input_token_cost: 2.5e-07, cache_creation_input_token_cost: 1.25e-06 } },
-	{ model_name: "moonshotai/kimi-k2.5", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, supports_function_calling: true, supports_vision: true, input_cost_per_token: 5e-07, output_cost_per_token: 2.8e-06, cache_read_input_token_cost: 1.25e-07, cache_creation_input_token_cost: 6.25e-07 } },
-	{ model_name: "moonshotai/kimi-k2.6", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, supports_function_calling: true, supports_vision: true, supports_reasoning: true, input_cost_per_token: 1e-06, output_cost_per_token: 4e-06, cache_read_input_token_cost: 2.5e-07, cache_creation_input_token_cost: 1.25e-06 } },
-	{ model_name: "moonshotai/kimi-k2.7-code", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, supports_function_calling: true, supports_vision: true, supports_reasoning: true, input_cost_per_token: 1.25e-06, output_cost_per_token: 4.5e-06, cache_read_input_token_cost: 3.125e-07, cache_creation_input_token_cost: 0 } },
-	{ model_name: "nvidia/nemotron-3-super-120b-a12b", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 3e-07, output_cost_per_token: 9e-07, cache_read_input_token_cost: 7.5e-08 } },
-	{ model_name: "openai/gpt-oss-120b", model_info: { max_input_tokens: 131000, max_output_tokens: 32768, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 4e-08, output_cost_per_token: 2e-07, cache_read_input_token_cost: 1e-08, cache_creation_input_token_cost: 5e-08 } },
-	{ model_name: "openai/gpt-oss-20b", model_info: { max_input_tokens: 131000, max_output_tokens: 32768, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 3e-08, output_cost_per_token: 1.4e-07, cache_read_input_token_cost: 7.5e-09, cache_creation_input_token_cost: 3.75e-08 } },
-	{ model_name: "qwen/qwen-2.5-72b-instruct", model_info: { max_input_tokens: 33000, max_output_tokens: null, supports_function_calling: true, input_cost_per_token: 7e-08, output_cost_per_token: 2.6e-07, cache_read_input_token_cost: 1.75e-08, cache_creation_input_token_cost: 8.75e-08 } },
-	{ model_name: "qwen/qwen3-235b-a22b-2507", model_info: { max_input_tokens: 131000, max_output_tokens: 262144, supports_function_calling: true, input_cost_per_token: 7.2e-08, output_cost_per_token: 4.64e-07, cache_read_input_token_cost: 1.8e-08, cache_creation_input_token_cost: 9e-08 } },
-	{ model_name: "qwen/qwen3-coder-30b-a3b-instruct", model_info: { max_input_tokens: 262000, max_output_tokens: null, supports_function_calling: true, input_cost_per_token: 6e-08, output_cost_per_token: 2.5e-07, cache_read_input_token_cost: 1.5e-08, cache_creation_input_token_cost: 7.5e-08 } },
-	{ model_name: "qwen/qwen3.5-122b-a10b", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, supports_function_calling: true, supports_vision: true, supports_reasoning: true, input_cost_per_token: 5e-07, output_cost_per_token: 3.5e-06, cache_read_input_token_cost: 1.25e-07, cache_creation_input_token_cost: 6.25e-07 } },
-	{ model_name: "qwen/qwen3.5-9b", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 1.5e-07, output_cost_per_token: 2e-07, cache_read_input_token_cost: 3.75e-08 } },
-	{ model_name: "z-ai/glm-4.6", model_info: { max_input_tokens: 203000, max_output_tokens: 131000, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 4e-07, output_cost_per_token: 1.75e-06, cache_read_input_token_cost: 1e-07, cache_creation_input_token_cost: 5e-07 } },
-	{ model_name: "z-ai/glm-4.7", model_info: { max_input_tokens: 200000, max_output_tokens: 200000, supports_function_calling: true, supports_vision: true, supports_reasoning: true, input_cost_per_token: 6e-07, output_cost_per_token: 2.2e-06, cache_read_input_token_cost: 1.5e-07, cache_creation_input_token_cost: 7.5e-07 } },
-	{ model_name: "z-ai/glm-5", model_info: { max_input_tokens: 202752, max_output_tokens: 202752, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 1e-06, output_cost_per_token: 3.2e-06, cache_read_input_token_cost: 2.5e-07, cache_creation_input_token_cost: 1.25e-06 } },
-	{ model_name: "z-ai/glm-5-turbo", model_info: { max_input_tokens: 202752, max_output_tokens: 131072, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 1.2e-06, output_cost_per_token: 4e-06, cache_read_input_token_cost: 3e-07, cache_creation_input_token_cost: 1.5e-06 } },
-	{ model_name: "z-ai/glm-5.1", model_info: { max_input_tokens: 202752, max_output_tokens: 202752, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 1.4e-06, output_cost_per_token: 4.4e-06, cache_read_input_token_cost: 3.5e-07, cache_creation_input_token_cost: 1.75e-06 } },
-	{ model_name: "z-ai/glm-5.2", model_info: { max_input_tokens: 1048576, max_output_tokens: 131072, supports_function_calling: true, supports_reasoning: true, input_cost_per_token: 1.5e-06, output_cost_per_token: 4.5e-06, cache_read_input_token_cost: 3.75e-07 } },
-	{ model_name: "z-ai/glm-5v-turbo", model_info: { max_input_tokens: 202752, max_output_tokens: 131072, supports_function_calling: true, supports_vision: true, supports_reasoning: true, input_cost_per_token: 1.2e-06, output_cost_per_token: 4e-06, cache_read_input_token_cost: 3e-07, cache_creation_input_token_cost: 1.5e-06 } },
+	{ model_name: "deepseek/deepseek-r1-0528", model_info: { max_input_tokens: 164000, max_output_tokens: 8192, input_cost_per_token: 6.6e-07, output_cost_per_token: 2.6e-06, cache_read_input_token_cost: 1.65e-07, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "z-ai/glm-5.2", model_info: { max_input_tokens: 1048576, max_output_tokens: 64000, input_cost_per_token: 1.5e-06, output_cost_per_token: 4.5e-06, cache_read_input_token_cost: 3.75e-07, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "qwen/qwen3-235b-a22b-2507", model_info: { max_input_tokens: 131000, max_output_tokens: 262144, input_cost_per_token: 7.2e-08, output_cost_per_token: 4.64e-07, cache_read_input_token_cost: 1.8e-08, supports_function_calling: true } },
+	{ model_name: "z-ai/glm-5.1", model_info: { max_input_tokens: 202752, max_output_tokens: 64000, input_cost_per_token: 1.4e-06, output_cost_per_token: 4.4e-06, cache_read_input_token_cost: 3.5e-07, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "moonshotai/kimi-k2.7-code", model_info: { max_input_tokens: 262144, max_output_tokens: 64000, input_cost_per_token: 1.25e-06, output_cost_per_token: 4.5e-06, cache_read_input_token_cost: 3.125e-07, supports_function_calling: true, supports_reasoning: true, supports_vision: true } },
+	{ model_name: "minimax/minimax-m3", model_info: { max_input_tokens: 1048576, max_output_tokens: 64000, input_cost_per_token: 4e-07, output_cost_per_token: 2e-06, cache_read_input_token_cost: 1e-07, supports_function_calling: true, supports_reasoning: true, supports_vision: true } },
+	{ model_name: "qwen/qwen3.5-122b-a10b", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, input_cost_per_token: 5e-07, output_cost_per_token: 3.5e-06, cache_read_input_token_cost: 1.25e-07, supports_function_calling: true, supports_reasoning: true, supports_vision: true } },
+	{ model_name: "deepseek/deepseek-v4-pro", model_info: { max_input_tokens: 1048576, max_output_tokens: 64000, input_cost_per_token: 1.75e-06, output_cost_per_token: 3.5e-06, cache_read_input_token_cost: 4.375e-07, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "z-ai/glm-5", model_info: { max_input_tokens: 202752, max_output_tokens: 202752, input_cost_per_token: 1e-06, output_cost_per_token: 3.2e-06, cache_read_input_token_cost: 2.5e-07, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "z-ai/glm-5v-turbo", model_info: { max_input_tokens: 202752, max_output_tokens: 131072, input_cost_per_token: 1.2e-06, output_cost_per_token: 4e-06, cache_read_input_token_cost: 3e-07, supports_function_calling: true, supports_reasoning: true, supports_vision: true } },
+	{ model_name: "deepseek/deepseek-v3.2", model_info: { max_input_tokens: 163840, max_output_tokens: 163840, input_cost_per_token: 3e-07, output_cost_per_token: 5e-07, cache_read_input_token_cost: 7.5e-08, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "qwen/qwen3.5-9b", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, input_cost_per_token: 1.5e-07, output_cost_per_token: 2e-07, cache_read_input_token_cost: 3.75e-08, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "moonshotai/kimi-k3", model_info: { max_input_tokens: 1048576, max_output_tokens: 64000, input_cost_per_token: 3e-06, output_cost_per_token: 1.5e-05, cache_read_input_token_cost: 7.5e-07, supports_function_calling: true, supports_reasoning: true, supports_vision: true } },
+	{ model_name: "deepseek/deepseek-v4-flash-0731", model_info: { max_input_tokens: 1048576, max_output_tokens: 64000, input_cost_per_token: 2.5e-07, output_cost_per_token: 3e-07, cache_read_input_token_cost: 6.25e-08, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "moonshotai/kimi-k2.5", model_info: { max_input_tokens: 262144, max_output_tokens: 262144, input_cost_per_token: 5e-07, output_cost_per_token: 2.8e-06, cache_read_input_token_cost: 1.25e-07, supports_function_calling: true, supports_vision: true } },
+	{ model_name: "z-ai/glm-5-turbo", model_info: { max_input_tokens: 202752, max_output_tokens: 131072, input_cost_per_token: 1.2e-06, output_cost_per_token: 4e-06, cache_read_input_token_cost: 3e-07, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "minimax/minimax-m2.5", model_info: { max_input_tokens: 196608, max_output_tokens: 65536, input_cost_per_token: 3e-07, output_cost_per_token: 1.2e-06, cache_read_input_token_cost: 7.5e-08, supports_function_calling: true, supports_reasoning: true } },
+	{ model_name: "moonshotai/kimi-k2.6", model_info: { max_input_tokens: 262144, max_output_tokens: 64000, input_cost_per_token: 1e-06, output_cost_per_token: 4e-06, cache_read_input_token_cost: 2.5e-07, supports_function_calling: true, supports_reasoning: true, supports_vision: true } },
 ];
 
-export default async function (pi: ExtensionAPI) {
-	// Prefer the live catalog (only reachable when TENSORX_API_KEY is in the
-	// environment); otherwise register the bundled snapshot so TensorX still
-	// appears under /login → API Keys and is usable with a saved key.
-	const models = (await fetchModels()) ?? mapCatalog(FALLBACK_CATALOG);
+const FALLBACK_MODELS = mapCatalog(FALLBACK_CATALOG);
 
+// Most recently fetched live catalog, so `/tensorx-models` reflects the current
+// model set once a refresh has run (not just the fallback snapshot).
+let latestModels: RegisteredModel[] = FALLBACK_MODELS;
+
+export default async function (pi: ExtensionAPI) {
 	pi.registerProvider(PROVIDER_NAME, {
 		name: PROVIDER_DISPLAY_NAME,
 		baseUrl: BASE_URL,
 		apiKey: API_KEY_ENV_REF,
 		api: "openai-completions",
-		models,
+		// Initial/offline catalog so the provider shows under /login pre-auth and
+		// requests resolve before the first refresh completes.
+		models: FALLBACK_MODELS,
+		// pi calls this on model refresh and hands us the effective credential
+		// (the /login-stored key, falling back to TENSORX_API_KEY), so the live
+		// /v1/model/info catalog is fetched with the authenticated key instead of
+		// relying on a bundled snapshot.
+		async refreshModels({ credential, allowNetwork, signal }) {
+			const apiKey = credential?.type === "api_key" ? credential.key : undefined;
+			if (!allowNetwork || !apiKey) return FALLBACK_MODELS;
+			const live = await fetchModels(apiKey, signal);
+			if (live) latestModels = live;
+			return live ?? FALLBACK_MODELS;
+		},
 	});
 
 	pi.registerCommand("tensorx-models", {
 		description: "List available TensorX models",
 		handler: async (_args, ctx) => {
-			if (models.length === 0) {
+			if (latestModels.length === 0) {
 				ctx.ui.notify("No TensorX models available", "warning");
 				return;
 			}
 
-			const items = [...models]
+			const items = [...latestModels]
 				.sort((a, b) => a.id.localeCompare(b.id))
 				.map((model) => {
 					const tags = [];
@@ -191,7 +191,7 @@ export default async function (pi: ExtensionAPI) {
 					return tags.length > 0 ? `${model.id} (${tags.join(", ")})` : model.id;
 				});
 
-			await ctx.ui.select(`${PROVIDER_DISPLAY_NAME} — ${models.length} models`, items);
+			await ctx.ui.select(`${PROVIDER_DISPLAY_NAME} — ${latestModels.length} models`, items);
 		},
 	});
 }
